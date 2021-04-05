@@ -1,384 +1,289 @@
 #include "oss.h"
+extern errno;
 
-extern int errno;
-int shmid, sem_id;
-int proc_used[MAX];		
+int shm_id;
+int sem_id;
+int proc_used[MAX];
+memory_container* shm_ptr;
+FILE* file_ptr;
+char log_buffer[200];
 int ready_pids[MAX];
 int blocked_queue[MAX];
-FILE* fp;
-int ready_in, ready_out, blocked_in, blocked_out, temp_pid;
+int ready_in, ready_out, blocked_in, blocked_out;
+int temp_pid;
+int line_count = 0;
 
-shmptr_t* shmptr;
-char* log_name = "logfile"; // Default
-char log_buf[200];
-int alarm_time = 100; // Default
-
-void kill_pids();
+void init_table();
 
 int main(int argc, char* argv[]) {
 
-	//*************************************************************************************************
-	//
-	//	Signal Handling And Variable Initialization
-	//
-	//*************************************************************************************************
-
-	signal(SIGINT, sig_handler);
-	signal(SIGKILL, sig_handler);
-	signal(SIGALRM, sig_handler);
-
+//*************************************************************************************************
+//
+//	Signal Handling And Variable Initialization
+//
+//*************************************************************************************************
 	srand(time(NULL));
 
-	ready_in = ready_out = blocked_in = blocked_out = 0;
+	signal(SIGKILL, signal_handler);
+	signal(SIGALRM, signal_handler);
+	signal(SIGINT, signal_handler);
 
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = child_handler;
 	sigaction(SIGCHLD, &sa, NULL);
 
-	//*************************************************************************************************
-	//
-	//	GetOpt
-	//
-	//*************************************************************************************************
-
+	char log_name[25];
+	int max_time = 100;
 	int opt;
-	char* opt_buf;
-	bool file_given = false;
+	int temp, ready;
+	unsigned int nano_change;
+	int rand_time;
+	char* default_log = "logfile";
+	ready_in = ready_out = blocked_in = blocked_out = 0;
+	bool new_name = false;
 
-	if (argc == 1)
-	{
-		system("clear");
-		errno = 1;
-		perror("oss: Error: Program called without agruments, use ./monitor -h for help");
-		return 0;
-	}
+//*************************************************************************************************
+//
+//	GetOpt
+//
+//*************************************************************************************************
 
-	//system("clear");
-	while ((opt = getopt(argc, argv, "hs:l:")) != -1)
-	{
-		switch (opt)
-		{
+	while ((opt = getopt(argc, argv, "hs:l:")) != -1) {
+		switch (opt) {
 		case 'h':
-			help_menu();
+			display_help();
 			break;
 		case 's':
-			
+			max_time = atoi(optarg);
+			break;
 		case 'l':
-			opt_buf = optarg;
-			if (strlen(opt_buf) > 20)
-			{
-				printf("File name given is too long, defaulting to logfile.txt\n");
-				create_file(log_name);
+			if (strlen(optarg) > 19) {
+				printf("Given string too long, returning to default\n\n");
+				new_name = false;
 			}
-			else
-			{
-				log_name = opt_buf;
-				create_file(log_name);
+			else {
+				strcpy(log_name, optarg);
+				strcat(log_name, ".txt");
+				new_name = true;
 			}
-			file_given = true;
 			break;
 		default:
-			errno = 1;
-			perror("monitor: Error: Wrong option given");
-			break;
+			printf("Error: Invalid Option, please us ./oss -h for help\n\n");
+			display_help();
+			exit(0);
 		}
 	}
 
-	if (!file_given)
-		create_file(log_name);
+	if (new_name == false)
+	{
+		strcpy(log_name, default_log);
+		strcat(log_name, ".txt");
+	}
 
-	//*************************************************************************************************
-	//
-	//	Generating Shared memory
-	//
-	//*************************************************************************************************
-	
-	key_t shmkey = ftok("./README.md", 'a');
-	key_t semkey = ftok("Makefile", 'a');
+	file_ptr = fopen(log_name, "a");
 
-	printf("before initialization\n");
-
-	if (!create_shared_memory(shmkey, semkey))
+	if ((create_shm() == -1) || (create_sem() == -1)) 
+	{
 		cleanup();
-
-	printf("Initializing now\n");
+		exit(0);
+	}
 
 	init_table();
 	init_sems();
 	init_shm();
 
-	printf("Out of initialize\n");
 	set_fork();
-	
-	/*while (1) {
-		sleep(1);
 
-		int ready_count = get_num_of_ready();
-		shmptr->user_count = get_num_of_users();
-		int user_count_debug = shmptr->user_count;
+//*************************************************************************************************
+//
+//	Main While Loop
+//
+//*************************************************************************************************
 
-		if (shmptr->user_count < MAX)
-		{
-			// If enough time has passed for next process to be created.
-			if (shmptr->next_fork_sec == shmptr->clock_seconds)
-			{
-				if (shmptr->next_fork_nano <= shmptr->next_fork_sec)
-				{
-					spawn();
-					set_fork();
-				}
-			}
-			else if (shmptr->next_fork_sec < shmptr->clock_seconds)
-			{
-				spawn();
-				set_fork();
-			}
-
-			move_blocked();
-
-			if (ready_count > 0)
-			{
-				temp_pid = ready_pids[ready_out];
-				int temp = get_index(temp_pid);
-
-				shmptr->current_index = temp;
-
-				int rand_time = rand() % ((10001) - 100) + 100;
-				shmptr->clock_nano += rand_time;
-				reset_nano();
-
-				//sprintf(log_buf, "OSS: Dispactching PID %d", temp_pid);
-				//write_to_log(log_buf);
-
-				shmptr->current_pid = temp_pid;
-				ready_pids[ready_out] = 0;
-				ready_out = (ready_out + 1) % MAX;
-
-				sem_wait(sem_id);
-
-				if (shmptr->pcb_arr[temp].early_term)
-				{
-					//sprintf(log_buf, "OSS: PID: %d has terminated early after spending %d ns in the cpu/system\n", temp_pid, shmptr->pcb_arr[temp].prev_burst);
-					//write_to_log(log_buf);
-					proc_used[temp] = 0;
-				}
-				else if (shmptr->pcb_arr[temp].blocked)
-				{
-					blocked_queue[blocked_in] = temp_pid;
-					blocked_in = (blocked_in + 1) % MAX;
-					//sprintf(log_buf, "OSS: PID: %d has been blocked and is going into blocked queue. Last Burst: %d ns\n", temp_pid, shmptr->pcb_arr[temp].prev_burst);
-					//write_to_log(log_buf);
-				}
-				else
-				{
-					proc_used[temp] = 0;
-					//sprintf(log_buf, "OSS: PID: %d has finished. CPU time: %.2f ms System time: %.2f ms Last burst: %d ns\n", temp_pid, shmptr->pcb_arr[temp].cpu_time, shmptr->pcb_arr[temp].system_time, shmptr->pcb_arr[temp].prev_burst);
-					//write_to_log(log_buf);
-				}
-			}
-			shmptr->clock_seconds += 1;
-			int nano_add = (rand() % 1001);
-			shmptr->clock_nano += nano_add;
-			reset_nano();
-		}
-		
-	}*/
-
+	int ready_count;
+	int temp_pid;
 	while (1) {
 
 		sleep(1);
-		int ready_count = get_num_of_ready();
+		ready_count = count_ready();
 
-		shmptr->user_count = get_num_of_users();
+		shm_ptr->user_count = get_user_count();
 
 		if (shm_ptr->user_count < MAX) {
 
-			if (shm_ptr->next_fork_sec == shm_ptr->clock_seconds) {
-				if (shm_ptr->next_fork_nano <= shm_ptr->clock_nano) {
-					spawn();
-					set_fork();
-
-				}
+			if ((shm_ptr->next_fork_sec == shm_ptr->clock_seconds) &&
+				(shm_ptr->next_fork_nano <= shm_ptr->clock_nano)) 
+			{
+				spawn();
+				set_fork();
 			}
-			else if (shm_ptr->next_fork_sec < shm_ptr->clock_seconds) {
+			else if (shm_ptr->next_fork_sec < shm_ptr->clock_seconds) 
+			{
 				spawn();
 				set_fork();
 			}
 		}
 
-		purge_blocked();
+		clear_blocked();
 
-		if (ready_count > 0) {
-
+		if (ready_count > 0)
+		{
 			temp_pid = ready_pids[ready_out];
 			temp = get_index_by_pid(temp_pid);
+
 			shm_ptr->scheduled_index = temp;
 
-			rand_time = rand() % ((10000 + 1) - 100) + 100;
+			rand_time = rand() % (10001);
 			shm_ptr->clock_nano += rand_time;
 			normalize_clock();
 
-			sprintf(log_buffer, "OSS: Dispatching PID %d to do work\n", temp_pid);
-			log_string(log_buffer);
-
+			sprintf(log_buffer, "OSS: Dispatching PID %d\n", temp_pid);
+			write_to_log(log_buffer);
+	
 			shm_ptr->scheduled_pid = temp_pid;
 
 			ready_pids[ready_out] = 0;
 			ready_out = (ready_out + 1) % MAX;
 
 			sem_wait(sem_id);
-
-			if (shm_ptr->pcb_arr[temp].early_term) {
+		
+			if (shm_ptr->pcb_arr[temp].early_term) 
+			{
+			
 				sprintf(log_buffer, "OSS: PID: %d has terminated early after spending %d ns in the cpu/system\n", temp_pid, shm_ptr->pcb_arr[temp].prev_burst);
-				log_string(log_buffer);
+				write_to_log(log_buffer);
 				proc_used[temp] = 0;
 			}
-			else if (shm_ptr->pcb_arr[temp].blocked) {
+			else if (shm_ptr->pcb_arr[temp].blocked) 
+			{
 				blocked_queue[blocked_in] = temp_pid;
 				blocked_in = (blocked_in + 1) % MAX;
 				sprintf(log_buffer, "OSS: PID: %d has been blocked and is going into blocked queue. Last Burst: %d ns\n", temp_pid, shm_ptr->pcb_arr[temp].prev_burst);
-				log_string(log_buffer);
+				write_to_log(log_buffer);
 				sprintf(log_buffer, "OSS: entire quantum not used by process, PID was blocked before it could use it all\n");
-				log_string(log_buffer);
+				write_to_log(log_buffer);
 			}
-			else {
+			else 
+			{		
 				proc_used[temp] = 0;
 				sprintf(log_buffer, "OSS: PID: %d has finished. CPU time: %.2f ms System time: %.2f ms Last burst: %d ns\n", temp_pid, shm_ptr->pcb_arr[temp].cpu_time, shm_ptr->pcb_arr[temp].system_time, shm_ptr->pcb_arr[temp].prev_burst);
-				log_string(log_buffer);
+				write_to_log(log_buffer);
 			}
-
-
 		}
-
-
-		//increment time at end of loop to simulate the scheduler taking time
 		shm_ptr->clock_seconds += 1;
 		nano_change = rand() % 1001;
 		shm_ptr->clock_nano += nano_change;
 		normalize_clock();
-
 	}
-
 	cleanup();
 	return 0;
 }
 
-int get_index(int pid) {
-	for (int i = 0; i < MAX; i++)
-	{
-		if (shmptr->pcb_arr->pid == pid)
-			return shmptr->pcb_arr->index;
-	}
-	return -1;
-}
-
-void move_blocked() {
-	int pid = blocked_queue[blocked_out];
-	int index = get_index(pid);
-
-	if (pid != 0)
-	{
-		if ((shmptr->pcb_arr[index].blocked_until_seconds == shmptr->clock_seconds) &&
-			(shmptr->pcb_arr[index].blocked_until_nano == shmptr->clock_nano))
-		{
-			blocked_queue[blocked_out] = 0;
-			blocked_out = (blocked_out + 1) % MAX;
-			ready_pids[ready_in] = pid;
-			ready_in = (ready_in + 1) % MAX;
-		}
-		else if (shmptr->next_fork_sec < shmptr->clock_seconds)
-		{
-			blocked_queue[blocked_out] = 0;
-			blocked_out = (blocked_out + 1) % MAX;
-			ready_pids[ready_in] = pid;
-			ready_in = (ready_in + 1) % MAX;
-		}
-	}
-}
-
-void spawn() {
-	int next_user = find_next_user();
-	fork_user(next_user);
-}
-
-int find_next_user() {
-	for (int i = 0; i < MAX; i++)
-	{
-		if (proc_used[i] == 0)
-			return i;
-	}
-}
-
-void fork_user(int user_id) {
-	int pid;
-
-	if ((pid = fork()) == -1)
-	{
-		perror("oss.c: Error: Could not fork child in function fork_user()");
-		cleanup();
-	}
-	else
-	{
-		if (pid != 0)
-		{
-			printf("in forked spot\n");
-			shmptr->pcb_arr[user_id].pid = pid;
-			proc_used[user_id] = 1;// maybe change this to boolean
-			//init_pcb(user_id);
-			ready_pids[ready_in] = shmptr->pcb_arr[user_id].pid;
-			//sprintf(log_buf, "OSS: PID: %d was forked and placed in the ready queue\n", shmptr->pcb_arr[user_id].pid);
-			//write_to_log(log_buf);
-			ready_in = (ready_in + 1) % MAX;
-		}
-		else {
-			execl("./uproc", "./uproc", (char*)0);
-		}
-	}
-}
-
-int get_num_of_users() {
+int count_ready() {
 	int count = 0;
-	for (int i = 0; i < MAX; i++)
-	{
-		if (ready_pids[i] != 0)
-			count++;
-	}
-	for (int i = 0; i < MAX; i++)
-	{
-		if (blocked_queue[i] != 0)
+	int i;
+	for (i = 0; i < MAX; i++) {
+		if (ready_pids[i] > 0)
 			count++;
 	}
 	return count;
 }
 
-int get_num_of_ready() {
-	int count = 0;
-	for (int i = 0; i < MAX; i++)
-	{
-		if (ready_pids[i] != 0)
-			count++;
-	}
-	return count;
+void display_help() {
+	printf("HELP MENU\n\n");
+	printf("The goal of this homework is to learn about process scheduling inside an operating system. You will work on the specified\n");
+	printf("scheduling algorithmand simulate its performance.\n");
+	printf("PROGRAM OPTIONS:\n\n");
+	printf("OPTION [-h]:\n");
+	printf("           When called, will display help menu\n\n");
+	printf("OPTION [-s][argument]:\n");
+	printf("           When called, will allow you to change the length of time program runs for. (in seconds)\n\n");
+	printf("OPTION [-l][argument]:\n");
+	printf("           When called, will allow you to replace the default logfile.txt with your own name.\n");
+	printf("           If the log file goes over 1000 lines, which it will with the default time limit, it gets terminated early\n\n");
+	exit(0);
 }
+
+void normalize_clock() {
+	unsigned int nano = shm_ptr->clock_nano;
+	int sec;
+	if (nano >= 1000000000) {
+		shm_ptr->clock_seconds += 1;
+		shm_ptr->clock_nano -= 1000000000;
+	}
+}
+
+void normalize_fork() {
+	unsigned int nano = shm_ptr->next_fork_nano;
+	int sec;
+	if (nano >= 1000000000) {
+		shm_ptr->next_fork_sec += 1;
+		shm_ptr->next_fork_nano -= 1000000000;
+	}
+}
+
 
 void set_fork() {
-	shmptr->next_fork_sec = (rand() % 2) + shmptr->clock_seconds;
-	shmptr->next_fork_nano = (rand() % 1001) + shmptr->clock_nano;
-
-	reset_nano();
+	shm_ptr->next_fork_sec = (rand() % 2) + shm_ptr->clock_seconds;
+	shm_ptr->next_fork_nano = (rand() % 1001) + shm_ptr->clock_nano;
+	normalize_fork();
 }
 
-void reset_nano() {
-	if (shmptr->clock_nano >= 1000000000) // If nanoseconds reaches one second, adjust clock
-	{
-		shmptr->clock_seconds += 1;
-		shmptr->clock_nano -= 1000000000;
+int create_shm() {
+	key_t key = ftok("Makefile", 'a');
+	if ((shm_id = shmget(key, (sizeof(pcb) * MAX) + sizeof(memory_container), IPC_CREAT | 0666)) == -1) {
+		errno = 5;
+		perror("oss.c: Error: Could not create shared memory in create_shm()");
+		return -1;
 	}
+	if ((shm_ptr = (memory_container*)shmat(shm_id, 0, 0)) == (memory_container*)-1) {
+		errno = 5;
+		perror("oss.c: Error: Could not attach shared memory in create_shm()");
+		return -1;
+	}
+
+	return 0;
+}
+
+int create_sem() {
+	key_t key = ftok(".", 'a');
+	if ((sem_id = semget(key, NUM_SEMS, IPC_CREAT | 0666)) == -1) {
+		errno = 5;
+		perror("oss.c: Error: Could not create semaphores in create_sem()");
+		return -1;
+	}
+	return 0;
+}
+
+void sem_wait(int sem) {
+	struct sembuf op;
+	op.sem_num = sem;
+	op.sem_op = -1;
+	op.sem_flg = 0;
+	semop(sem_id, &op, 1);
+}
+
+
+
+void write_to_log(char* string) {
+	fputs(string, file_ptr);
+	line_count++;
+	if (line_count >= 1000)
+	{
+		printf("LogFile Limit exceeded, exiting...\n\n");
+		cleanup();
+		exit(0);
+	}
+}
+
+
+void init_sems() {
+	//sets the initial values in the semaphores
+	semctl(sem_id, 0, SETVAL, 0);
 }
 
 void init_table() {
-	printf("Init table\n");
 	for (int i = 0; i < MAX; i++)
 	{
 		proc_used[i] = 0;
@@ -386,103 +291,128 @@ void init_table() {
 	}
 }
 
-void child_handler() {
-	pid_t pid;
-	while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
-		// Child Died, do something
-	}
-
-}
-
-void init_sems() {
-	printf("Init sems\n");
-	semctl(sem_id, 0, SETVAL, 1);
-}
-
-void init_pcb(int i) {
-	printf("Init pcb\n");
-	shmptr->pcb_arr[i].blocked = false;
-	shmptr->pcb_arr[i].early_term = false;
-	shmptr->pcb_arr[i].waiting = true;
-	shmptr->pcb_arr[i].start_nano = 0;
-	shmptr->pcb_arr[i].start_sec = 0;
-	shmptr->pcb_arr[i].cpu_time = 0;
-	shmptr->pcb_arr[i].system_time = 0;
-	shmptr->pcb_arr[i].prev_burst = 0;
-	shmptr->pcb_arr[i].index = i;
+void init_pcb(int index) {
+	shm_ptr->pcb_arr[index].blocked = false;
+	shm_ptr->pcb_arr[index].early_term = false;
+	shm_ptr->pcb_arr[index].wait_on_oss = true;
+	shm_ptr->pcb_arr[index].start_nano = 0;
+	shm_ptr->pcb_arr[index].start_sec = 0;
+	shm_ptr->pcb_arr[index].cpu_time = 0;
+	shm_ptr->pcb_arr[index].system_time = 0;
+	shm_ptr->pcb_arr[index].prev_burst = 0;
+	shm_ptr->pcb_arr[index].index = index;
 
 }
 
 void init_shm() {
-	printf("Init shm\n");
-	shmptr->user_count = 0;
-	shmptr->clock_nano = 0;
-	shmptr->clock_seconds = 0;
-	shmptr->current_pid = 0;
-	shmptr->current_index = -1;
+	shm_ptr->user_count = 0;
+	shm_ptr->clock_nano = 0;
+	shm_ptr->clock_seconds = 0;
+	shm_ptr->scheduled_pid = 0;
+	shm_ptr->scheduled_index = -1;
 
 	for (int i = 0; i < MAX; i++)
 		init_pcb(i);
 }
 
-bool create_shared_memory(key_t shmkey, key_t semkey) {
-	printf("Creating shared Memory\n");
-	key_t key = ftok("Makefile", 'a');
-	shmid = shmget(key, (sizeof(pcb_t) * MAX) + sizeof(shmptr_t), IPC_CREAT | 0666);
-	if (shmid == -1)
+int get_next_location() {
+	for (int i = 0; i < MAX; i++) 
+	{
+		if (proc_used[i] == 0)
+			return i;
+	}
+	return -1;
+}
+
+int get_user_count() {
+	int total = 0;
+	for (int i = 0; i < MAX; i++)
+	{
+		if (ready_pids[i] != 0)
+			total++;
+	}
+	for (int i = 0; i < MAX; i++) 
+	{
+		if (blocked_queue[i] != 0)
+			total++;
+	}
+	return total;
+}
+
+void fork_user(int index) {
+
+	int pid;
+
+	if ((pid = fork()) == -1)
 	{
 		errno = 5;
-		perror("oss: Error: Could not created shared memory of struct");
-		return false;
+		perror("oss.c: Error: Could not for child in fork_user()");
+		cleanup();
+		exit(1);
 	}
-
-	shmptr = (shmptr_t*)(shmat(shmid, 0, 0));
-	if (shmptr == (shmptr_t*)-1)
+	else 
 	{
-		errno = 5;
-		perror("oss: Error: Could not attach shared memory of struct");
-		return false;
+		if (pid != 0) 
+		{
+			shm_ptr->pcb_arr[index].pid = pid;
+			proc_used[index] = 1;
+			init_pcb(index);
+			ready_pids[ready_in] = shm_ptr->pcb_arr[index].pid;
+			sprintf(log_buffer, "OSS: PID: %d was forked and placed in the ready queue\n", shm_ptr->pcb_arr[index].pid);
+			write_to_log(log_buffer);
+			ready_in = (ready_in + 1) % MAX;
+		}
+		else
+		{
+			execl("./uproc", "./uproc", (char*)0);
+		}
 	}
+}
 
-	key_t key1 = ftok(".", 'a');
-	sem_id = semget(key1, NUM_SEMS, IPC_CREAT | 0666);
+void spawn() {
+	int temp;
+	temp = get_next_location();
+	fork_user(temp);
+}
 
-	if (sem_id < 0)
-	{
-		errno = 5;
-		perror("oss: Error: Could not create shared memory of semaphores");
-		return false;
+int get_index_by_pid(int pid) {
+	for (int i = 0; i < MAX; i++) {
+		if (shm_ptr->pcb_arr[i].pid == pid) 
+			return shm_ptr->pcb_arr[i].index;
 	}
+	return -1;
+}
 
-	/*key_t key = ftok("Makefile", 'a');
-	//gets chared memory
-	if ((shmid = shmget(key, (sizeof(pcb_t) * MAX) + sizeof(shmptr_t), IPC_CREAT | 0666)) == -1) {
-		perror("oss: Error: Could not created shared memory of struct");
-		return false;
-	}
-	//tries to attach shared memory
-	if ((shmptr = (shmptr_t*)shmat(shmid, 0, 0)) == (shmptr_t*)-1) {
-		perror("oss: Error: Could not attach shared memory of struct");
-		return false;
-	}
-	key_t key1 = ftok(".", 'a');
-	//gets chared memory
-	if ((sem_id = semget(key1, NUM_SEMS, IPC_CREAT | 0666)) == -1) {
-		perror("oss: Error: Could not create shared memory of semaphores");
-		return false;
-	}*/
+void clear_blocked() {
+	int pid = blocked_queue[blocked_out];
+	int i = get_index_by_pid(pid);
+	if (pid != 0) {
+		if ((shm_ptr->pcb_arr[i].blocked_until_sec == shm_ptr->clock_seconds) && 
+			(shm_ptr->pcb_arr[i].blocked_until_nano <= shm_ptr->clock_nano))
+		{
+			blocked_queue[blocked_out] = 0;
+			blocked_out = (blocked_out + 1) % MAX;
+			ready_pids[ready_in] = pid;
+			ready_in = (ready_in + 1) % MAX;
+		}
+		else if (shm_ptr->next_fork_sec < shm_ptr->clock_seconds) 
+		{
+			blocked_queue[blocked_out] = 0;
+			blocked_out = (blocked_out + 1) % MAX;
+			ready_pids[ready_in] = pid;
+			ready_in = (ready_in + 1) % MAX;
 
-	return true;
+		}
+	}
 }
 
 void cleanup() {
 	kill_pids();
 	sleep(1);
-	shmdt(shmptr);
-	shmctl(shmid, IPC_RMID, NULL);
+	shmdt(shm_ptr);
+	shmctl(shm_id, IPC_RMID, NULL);
 	semctl(sem_id, 0, IPC_RMID, NULL);
-	fclose(fp);
-	exit(0);
+	fclose(file_ptr);
 }
 
 void kill_pids() {
@@ -499,52 +429,15 @@ void kill_pids() {
 	}
 }
 
-void sig_handler() {
+void signal_handler() {
 	cleanup();
-}
-
-void write_to_log(char* log) {
-	fputs(log, fp);
-}
-
-void create_file(char* name) {
-	char buf[50];
-
-	strcpy(buf, name);
-	strcat(buf, ".txt");
-	strcpy(log_name, buf);
-
-	fp = fopen(buf, "w");
-	fclose(fp);
-}
-
-void help_menu() {
-	printf("HELP MENU\n\n");
-	printf("Program wil take in four arguments, filename, consumers, producers and time\n");
-	printf("Defaults are logfile.txt, 2 producers, 6 consumers, and 100 seconds\n");
-	printf("PROGRAM OPTIONS:\n\n");
-	printf("OPTION [-o]:\n");
-	printf("           When called, will overwrite the default logfile with given logfile name\n");
-	printf("           If given filename is longer than 20, will default to logfile.txt\n");
-	printf("           EX: ./montior -o newfilename\n\n");
-	printf("OPTION [-c]:\n");
-	printf("           When called, will overwrite the default value of consumers with given value\n");
-	printf("           EX: ./montior -c 20\n\n");
-	printf("OPTION [-p]:\n");
-	printf("           When called, will overwrite the default value of producers with given value\n");
-	printf("           EX: ./monitor -p 20\n\n");
-	printf("OPTION [-t]:\n");
-	printf("           When called, will overwtie the default value of time with given value\n");
-	printf("           EX: ./monitor -t 20\n\n");
+	sleep(1);
 	exit(0);
 }
 
+void child_handler() {
+	pid_t pid;
+	while ((pid = waitpid((pid_t)(-1), 0, WNOHANG)) > 0) {
+	}
 
-void sem_wait(int sem) {
-	struct sembuf op;
-	op.sem_num = sem;
-	op.sem_op = -1;
-	op.sem_flg = 0;
-	semop(sem_id, &op, 1);
 }
-
