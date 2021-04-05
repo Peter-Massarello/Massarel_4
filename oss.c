@@ -232,12 +232,12 @@ void set_fork() {
 
 int create_shm() {
 	key_t key = ftok("Makefile", 'a');
-	if ((shm_id = shmget(key, (sizeof(pcb) * MAX) + sizeof(memory_container), IPC_CREAT | 0666)) == -1) {
+	if ((shm_id = shmget(key, (sizeof(pcb_t) * MAX) + sizeof(shmptr_t), IPC_CREAT | 0666)) == -1) {
 		errno = 5;
 		perror("oss.c: Error: Could not create shared memory in create_shm()");
 		return -1;
 	}
-	if ((shm_ptr = (memory_container*)shmat(shm_id, 0, 0)) == (memory_container*)-1) {
+	if ((shm_ptr = (shmptr_t*)shmat(shm_id, 0, 0)) == (shmptr_t*)-1) {
 		errno = 5;
 		perror("oss.c: Error: Could not attach shared memory in create_shm()");
 		return -1;
