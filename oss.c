@@ -125,57 +125,6 @@ int main(int argc, char* argv[]) {
 			}
 		}
 
-		clear_blocked();
-
-		if (ready_count > 0)
-		{
-			temp_pid = ready_pids[ready_out];
-			temp = get_index_by_pid(temp_pid);
-
-			shm_ptr->scheduled_index = temp;
-
-			rand_time = rand() % (10001);
-			shm_ptr->clock_nano += rand_time;
-			normalize_clock();
-
-			sprintf(log_buffer, "OSS: Dispatching PID %d\n", temp_pid);
-			write_to_log(log_buffer);
-	
-			shm_ptr->scheduled_pid = temp_pid;
-
-			ready_pids[ready_out] = 0;
-			ready_out = (ready_out + 1) % MAX;
-
-			sem_wait(sem_id);
-		
-			if (shm_ptr->pcb_arr[temp].early_term) 
-			{
-			
-				sprintf(log_buffer, "OSS: PID: %d has terminated early after spending %d ns in the cpu/system\n", temp_pid, shm_ptr->pcb_arr[temp].prev_burst);
-				write_to_log(log_buffer);
-				proc_used[temp] = 0;
-			}
-			else if (shm_ptr->pcb_arr[temp].blocked) 
-			{
-				blocked_queue[blocked_in] = temp_pid;
-				blocked_in = (blocked_in + 1) % MAX;
-				sprintf(log_buffer, "OSS: PID: %d has been blocked and is going into blocked queue. Last Burst: %d ns\n", temp_pid, shm_ptr->pcb_arr[temp].prev_burst);
-				write_to_log(log_buffer);
-				sprintf(log_buffer, "OSS: entire quantum not used by process, PID was blocked before it could use it all\n");
-				write_to_log(log_buffer);
-			}
-			else 
-			{		
-				proc_used[temp] = 0;
-				sprintf(log_buffer, "OSS: PID: %d has finished. CPU time: %.2f ms System time: %.2f ms Last burst: %d ns\n", temp_pid, shm_ptr->pcb_arr[temp].cpu_time, shm_ptr->pcb_arr[temp].system_time, shm_ptr->pcb_arr[temp].prev_burst);
-				write_to_log(log_buffer);
-			}
-		}
-		shm_ptr->clock_seconds += 1;
-		nano_change = rand() % 1001;
-		shm_ptr->clock_nano += nano_change;
-		normalize_clock();
-	}
 	cleanup();
 	return 0;
 }
@@ -214,16 +163,6 @@ void normalize_clock() {
 	}
 }
 
-void normalize_fork() {
-	unsigned int nano = shm_ptr->next_fork_nano;
-	int sec;
-	if (nano >= 1000000000) {
-		shm_ptr->next_fork_sec += 1;
-		shm_ptr->next_fork_nano -= 1000000000;
-	}
-}
-
-
 void set_fork() {
 	shm_ptr->next_fork_sec = (rand() % 2) + shm_ptr->clock_seconds;
 	shm_ptr->next_fork_nano = (rand() % 1001) + shm_ptr->clock_nano;
@@ -231,7 +170,7 @@ void set_fork() {
 }
 
 int create_shm() {
-	key_t key = ftok("Makefile", 'a');
+	key_t key = ftok("./README", 'a');
 	if ((shm_id = shmget(key, (sizeof(pcb_t) * MAX) + sizeof(shmptr_t), IPC_CREAT | 0666)) == -1) {
 		errno = 5;
 		perror("oss.c: Error: Could not create shared memory in create_shm()");
@@ -247,7 +186,7 @@ int create_shm() {
 }
 
 int create_sem() {
-	key_t key = ftok(".", 'a');
+	key_t key = ftok("./Makefile", 'a');
 	if ((sem_id = semget(key, NUM_SEMS, IPC_CREAT | 0666)) == -1) {
 		errno = 5;
 		perror("oss.c: Error: Could not create semaphores in create_sem()");
@@ -264,22 +203,18 @@ void sem_wait(int sem) {
 	semop(sem_id, &op, 1);
 }
 
-
-
 void write_to_log(char* string) {
 	fputs(string, file_ptr);
 	line_count++;
 	if (line_count >= 1000)
 	{
-		printf("LogFile Limit exceeded, exiting...\n\n");
+		printf("Exceeded Logfile Limit\n\n");
 		cleanup();
 		exit(0);
 	}
 }
 
-
 void init_sems() {
-	//sets the initial values in the semaphores
 	semctl(sem_id, 0, SETVAL, 0);
 }
 
@@ -315,7 +250,7 @@ void init_shm() {
 		init_pcb(i);
 }
 
-int get_next_location() {
+int get_next_process() {
 	for (int i = 0; i < MAX; i++) 
 	{
 		if (proc_used[i] == 0)
@@ -339,6 +274,12 @@ int get_user_count() {
 	return total;
 }
 
+void spawn() {
+	int temp;
+	temp = get_next_location();
+	fork_user(temp);
+}
+
 void fork_user(int index) {
 
 	int pid;
@@ -350,9 +291,9 @@ void fork_user(int index) {
 		cleanup();
 		exit(1);
 	}
-	else 
+	else
 	{
-		if (pid != 0) 
+		if (pid != 0)
 		{
 			shm_ptr->pcb_arr[index].pid = pid;
 			proc_used[index] = 1;
@@ -365,43 +306,6 @@ void fork_user(int index) {
 		else
 		{
 			execl("./uproc", "./uproc", (char*)0);
-		}
-	}
-}
-
-void spawn() {
-	int temp;
-	temp = get_next_location();
-	fork_user(temp);
-}
-
-int get_index_by_pid(int pid) {
-	for (int i = 0; i < MAX; i++) {
-		if (shm_ptr->pcb_arr[i].pid == pid) 
-			return shm_ptr->pcb_arr[i].index;
-	}
-	return -1;
-}
-
-void clear_blocked() {
-	int pid = blocked_queue[blocked_out];
-	int i = get_index_by_pid(pid);
-	if (pid != 0) {
-		if ((shm_ptr->pcb_arr[i].blocked_until_sec == shm_ptr->clock_seconds) && 
-			(shm_ptr->pcb_arr[i].blocked_until_nano <= shm_ptr->clock_nano))
-		{
-			blocked_queue[blocked_out] = 0;
-			blocked_out = (blocked_out + 1) % MAX;
-			ready_pids[ready_in] = pid;
-			ready_in = (ready_in + 1) % MAX;
-		}
-		else if (shm_ptr->next_fork_sec < shm_ptr->clock_seconds) 
-		{
-			blocked_queue[blocked_out] = 0;
-			blocked_out = (blocked_out + 1) % MAX;
-			ready_pids[ready_in] = pid;
-			ready_in = (ready_in + 1) % MAX;
-
 		}
 	}
 }
