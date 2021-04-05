@@ -4,7 +4,7 @@ extern errno;
 int shm_id;
 int sem_id;
 int proc_used[MAX];
-memory_container* shm_ptr;
+shmptr_t* shm_ptr;
 FILE* file_ptr;
 char log_buffer[200];
 int ready_pids[MAX];

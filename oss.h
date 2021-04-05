@@ -41,7 +41,7 @@ typedef struct {
 	float system_time;				
 	float cpu_time;				
 
-} pcb; 
+} pcb_t; 
 
 typedef struct {
 
@@ -56,9 +56,9 @@ typedef struct {
 	unsigned int clock_seconds;			
 
 
-	pcb pcb_arr[MAX];	
+	pcb_t pcb_arr[MAX];	
 
-} memory_container; 
+} shmptr_t; 
 
 
 int create_shm();
