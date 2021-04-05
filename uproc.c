@@ -2,7 +2,7 @@
 extern errno;
 
 int shm_id, sem_id;
-memory_container* shm_ptr;
+shmptr_t* shm_ptr;
 int user_index;
 int user_pid;
 int sec_diff;
