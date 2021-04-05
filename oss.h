@@ -1,16 +1,18 @@
-#include <stdio.h>
-#include <string.h>
 #include <unistd.h>
-#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <getopt.h>
 #include <stdbool.h>
-#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <math.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#include <sys/wait.h>
+#include <sys/types.h>
 #include <sys/sem.h>
-#include <errno.h>
-#include <time.h>
 
 #define MAX 18
 #define NUM_SEMS 1
